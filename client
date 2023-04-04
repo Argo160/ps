@@ -1,0 +1,73 @@
+#!/bin/bash
+
+# define server info
+user="root"
+server="he_port"
+server2="ar_port"
+remote_path="/tmp"
+remote_file="test_file"
+remote_test_script="test_speed.sh"
+remote_changeport_script="ar_changeport.sh"
+result_file="speed_test_results.txt"
+MAX_RETRIES=5
+RETRY_COUNT=0
+num_ports=8
+seconds=8s
+
+# define ports to skip
+skip_ports=(25 465)
+PORT=1024
+# create 50kb test file
+dd if=/dev/zero of=test_file bs=1024 count=10
+
+# loop through all ports (except skipped ports) and test upload speed
+#for port in $(seq 1 65535); do
+while [ $PORT -le 65525 ]
+do
+        if [[ "${skip_ports[@]}" =~ "${PORT}" ]]; then
+                continue
+        fi
+        # Skip port 25 and 465
+        if [ $PORT -eq 25 ] || [ $PORT -eq 465 ]
+        then
+                PORT=$((PORT+1))
+                continue
+        fi
+        for (( prt=PORT; prt<$((PORT+num_ports)); prt++ ))
+        do
+                echo "Testing port $prt ..."
+                # measure time to upload test file to remote server
+                speed=$(timeout $seconds scp -v -P $prt $remote_file $user@$server:$remote_path 2>&1 | awk '/Bytes per second:/ {print $5 / 1024}')
+                echo "speed: $speed"
+                # check if upload was successful
+                if [ $? -eq 0 ]; then
+                        if [ ! -z "$speed" ]; then
+                                # delete uploaded test file from remote server
+                                echo "$prt $speed" >> $result_file
+                                ssh -p $prt $user@$server "rm $remote_path/$remote_file"
+                                echo "Upload successful. Testing next port..."
+                        else
+                                echo "Upload test failed for port $prt within $seconds ."
+                        fi
+                fi
+        done    
+                while true; do
+                        # call changeport.sh on remote server with next port number to test
+                        ssh -p 22 $user@$server2 "bash $remote_changeport_script $PORT"
+
+                        if [ $? -eq 0 ]; then
+                                RETRY_COUNT=0
+                                break
+                        else
+                                RETRY_COUNT=$((RETRY_COUNT+1))
+                                if [ $RETRY_COUNT -ge $MAX_RETRIES ]; then
+                                        echo "Max retries exceeded"
+                                        exit 1  # set exit status to 1 (failure) and exit the script
+                                fi
+                        fi
+                done
+        PORT=$((PORT+num_ports))
+done
+
+# sort and display test results
+sort -n $result_file | tee $result_file
